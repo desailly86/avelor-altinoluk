@@ -13,6 +13,7 @@ Analizler için ÜCRETSİZ Google Gemini API anahtarı kullanılır:
     streamlit run app.py
 """
 
+import time
 import requests
 import numpy as np
 import pandas as pd
@@ -375,6 +376,44 @@ CRITERIA = [
 # ---------------------------------------------------------------------------
 # Yardımcı fonksiyonlar
 # ---------------------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def get_yf_session():
+    """
+    Yahoo'nun rate-limit'ini azaltmak için tarayıcı taklidi (curl_cffi) oturumu.
+    Kurulamazsa None döner ve yfinance varsayılan oturumu kullanır.
+    """
+    try:
+        from curl_cffi import requests as cffi_requests
+        return cffi_requests.Session(impersonate="chrome")
+    except Exception:
+        return None
+
+
+def _yf_ticker(ticker: str):
+    """Oturumlu bir yf.Ticker döndürür (oturum yoksa varsayılan)."""
+    sess = get_yf_session()
+    try:
+        return yf.Ticker(ticker, session=sess) if sess is not None else yf.Ticker(ticker)
+    except Exception:
+        return yf.Ticker(ticker)
+
+
+def _retry(fn, tries: int = 3, base_delay: float = 1.5):
+    """Rate-limit (429) durumunda artan beklemeyle yeniden dener."""
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            msg = str(e).lower()
+            if any(k in msg for k in ("too many", "rate", "429")):
+                time.sleep(base_delay * (i + 1))
+                continue
+            raise
+    raise last
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_tickers(query: str):
     """
@@ -417,8 +456,8 @@ def search_tickers(query: str):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_financials(ticker: str) -> dict:
     """yfinance ile gerçek finansal verileri çeker."""
-    tk = yf.Ticker(ticker)
-    info = tk.info or {}
+    tk = _yf_ticker(ticker)
+    info = _retry(lambda: tk.info) or {}
     if not info or (info.get("regularMarketPrice") is None and not info.get("longName")):
         raise ValueError("Ticker bulunamadı veya veri yok.")
 
@@ -468,7 +507,7 @@ def fetch_financials(ticker: str) -> dict:
 
     # Teknik göstergeler (fiyat geçmişinden)
     try:
-        hist = tk.history(period="1y")["Close"].dropna()
+        hist = _retry(lambda: tk.history(period="1y"))["Close"].dropna()
         if len(hist) >= 20:
             data["sma50"] = float(hist.rolling(50).mean().iloc[-1]) if len(hist) >= 50 else None
             data["sma200"] = float(hist.rolling(200).mean().iloc[-1]) if len(hist) >= 200 else None
@@ -498,17 +537,18 @@ def compute_rsi(close, period: int = 14):
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_history(ticker: str, period: str):
     """Belirli bir dönem için OHLCV fiyat geçmişini çeker."""
-    df = yf.Ticker(ticker).history(period=period)
+    tk = _yf_ticker(ticker)
+    df = _retry(lambda: tk.history(period=period))
     return df if df is not None and not df.empty else pd.DataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_statements(ticker: str):
     """Gelir tablosu, bilanço ve nakit akışı tablolarını çeker."""
-    tk = yf.Ticker(ticker)
+    tk = _yf_ticker(ticker)
     def safe(attr):
         try:
-            df = getattr(tk, attr)
+            df = _retry(lambda: getattr(tk, attr))
             return df if df is not None and not df.empty else pd.DataFrame()
         except Exception:
             return pd.DataFrame()
@@ -1119,9 +1159,11 @@ RULE_ENGINE = {
 }
 
 
-def run_analysis(client, model, context, company, ticker, criterion) -> str:
-    """Tek bir kritere göre Gemini'den analiz alır."""
-    task = criterion["prompt"].format(company=company, ticker=ticker)
+@st.cache_data(ttl=3600, show_spinner=False)
+def run_analysis(api_key, model, context, company, ticker, crit_key, prompt) -> str:
+    """Tek bir kritere göre Gemini'den analiz alır. Sonuç önbelleğe alınır;
+    aynı hisse+kriter için sayfa yeniden çalışsa bile tekrar API çağrılmaz."""
+    task = prompt.format(company=company, ticker=ticker)
     system = (
         "Sen deneyimli bir finansal analistsin. Aşağıda sana bir şirketin gerçek "
         "güncel finansal verileri veriliyor. SADECE verilen görevle ilgili analizi yap. "
@@ -1130,6 +1172,7 @@ def run_analysis(client, model, context, company, ticker, criterion) -> str:
         "değerlendirmelerini bilgilendirme amaçlı sun.\n\n"
         f"=== ŞİRKET VERİLERİ ===\n{context}"
     )
+    client = genai.Client(api_key=api_key)
     resp = client.models.generate_content(
         model=model,
         contents=task,
@@ -1233,6 +1276,8 @@ with col2:
 
 ticker = (selected or "").strip().upper()
 
+# Butona basınca aktif hisseyi hafızada tut; böylece grafik içindeki
+# zaman aralığı gibi seçimler yeniden çalıştırmada analizi sıfırlamaz.
 if go:
     if not ticker:
         st.warning("Lütfen bir ticker gir.")
@@ -1240,13 +1285,31 @@ if go:
     if not api_key and use_ai and not use_rules:
         st.error("Yapay zeka modu için ücretsiz Gemini API anahtarı gerekli (kenar çubuğundan gir).")
         st.stop()
+    st.session_state["active_ticker"] = ticker
+
+active_ticker = st.session_state.get("active_ticker", "")
+
+if active_ticker:
+    ticker = active_ticker
 
     # 1) Finansal veriyi çek
     try:
         with st.spinner(f"{ticker} için finansal veriler çekiliyor..."):
             fin = fetch_financials(ticker)
     except Exception as e:
-        st.error(f"Veri çekilemedi: {e}\n\nTicker doğru mu? Türk hisseleri için '.IS' ekle (örn: THYAO.IS).")
+        msg = str(e).lower()
+        if any(k in msg for k in ("too many", "rate", "429")):
+            st.error(
+                "⚠️ Yahoo Finance şu an isteği geçici olarak sınırladı (rate limit). "
+                "Bu, Streamlit Cloud'un paylaşımlı IP'sinden kaynaklanır, senin hatan değil.\n\n"
+                "**Ne yapabilirsin:**\n"
+                "- Birkaç dakika bekleyip tekrar 'Analiz Et'e bas (veri önbelleğe alınır, "
+                "aynı hisse tekrar hızlı gelir).\n"
+                "- Yoğun saatlerde daha sık olur; biraz sonra tekrar dene.\n"
+                "- Sorun ısrar ederse uygulamayı 'Reboot' etmek yeni bir oturum açar."
+            )
+        else:
+            st.error(f"Veri çekilemedi: {e}\n\nTicker doğru mu? Türk hisseleri için '.IS' ekle (örn: THYAO.IS).")
         st.stop()
 
     company = fin["name"]
@@ -1319,7 +1382,10 @@ if go:
                         else:
                             try:
                                 with st.spinner("Analiz üretiliyor..."):
-                                    out = run_analysis(client, model, context, company, ticker, criterion)
+                                    out = run_analysis(
+                                        api_key, model, context, company,
+                                        ticker, criterion["key"], criterion["prompt"],
+                                    )
                                 st.markdown(out)
                             except Exception as e:
                                 st.error(
