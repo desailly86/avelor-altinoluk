@@ -14,6 +14,12 @@ Analizler için ÜCRETSİZ Google Gemini API anahtarı kullanılır:
 """
 
 import requests
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import mplfinance as mpf
 import streamlit as st
 import yfinance as yf
 from streamlit_searchbox import st_searchbox
@@ -28,6 +34,216 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+
+# ---------------------------------------------------------------------------
+# GRAFİK MODELLERİ REHBERİ — şematik çizimler (matplotlib ile üretilir)
+# Her desen küçük bir çizim + açıklama + nasıl yorumlanır bilgisiyle gösterilir.
+# ---------------------------------------------------------------------------
+def _fig(draw_fn, bullish=None):
+    fig, ax = plt.subplots(figsize=(3.2, 2.0), dpi=110)
+    draw_fn(ax)
+    ax.set_xticks([]); ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_visible(False)
+    ax.margins(0.05)
+    fig.tight_layout(pad=0.3)
+    return fig
+
+
+def _line(ax, xs, ys, color="#1f77b4"):
+    ax.plot(xs, ys, color=color, linewidth=1.8)
+
+
+def d_head_shoulders(ax):
+    x = np.arange(11)
+    y = [1, 2, 1.5, 3, 1.6, 4.2, 1.6, 3, 1.5, 2, 1]
+    _line(ax, x, y, "#d62728")
+    ax.axhline(1.55, ls="--", color="gray", lw=1)  # boyun çizgisi
+
+
+def d_inv_head_shoulders(ax):
+    x = np.arange(11)
+    y = [5, 4, 4.5, 3, 4.4, 1.8, 4.4, 3, 4.5, 4, 5]
+    _line(ax, x, y, "#2ca02c")
+    ax.axhline(4.45, ls="--", color="gray", lw=1)
+
+
+def d_double_top(ax):
+    x = np.arange(9)
+    y = [1, 2.5, 4, 2.6, 4, 2.5, 3, 1.5, 0.8]
+    _line(ax, x, y, "#d62728")
+    ax.axhline(2.55, ls="--", color="gray", lw=1)
+
+
+def d_double_bottom(ax):
+    x = np.arange(9)
+    y = [5, 3.5, 2, 3.4, 2, 3.5, 3, 4.5, 5.2]
+    _line(ax, x, y, "#2ca02c")
+    ax.axhline(3.45, ls="--", color="gray", lw=1)
+
+
+def d_triple_top(ax):
+    x = np.arange(11)
+    y = [1, 3, 4, 3, 4, 3, 4, 3, 2, 1.2, 0.8]
+    _line(ax, x, y, "#d62728")
+    ax.axhline(3, ls="--", color="gray", lw=1)
+
+
+def d_rising_wedge(ax):
+    x = np.arange(10)
+    hi = 2 + 0.35 * x
+    lo = 1 + 0.5 * x
+    y = [lo[i] if i % 2 else hi[i] for i in range(10)]
+    _line(ax, x, y, "#d62728")
+    _line(ax, x, hi, "gray"); _line(ax, x, lo, "gray")
+
+
+def d_falling_wedge(ax):
+    x = np.arange(10)
+    hi = 5 - 0.5 * x
+    lo = 4 - 0.35 * x
+    y = [hi[i] if i % 2 else lo[i] for i in range(10)]
+    _line(ax, x, y, "#2ca02c")
+    _line(ax, x, hi, "gray"); _line(ax, x, lo, "gray")
+
+
+def d_cup_handle(ax):
+    x1 = np.linspace(0, 6, 40)
+    cup = 3 + 1.5 * ((x1 - 3) / 3) ** 2 - 1.5
+    x2 = np.linspace(6, 8, 15)
+    handle = 3 - 0.4 * np.sin((x2 - 6) * np.pi / 2)
+    x3 = np.linspace(8, 9, 8)
+    breakout = 3 + (x3 - 8) * 1.2
+    _line(ax, np.r_[x1, x2, x3], np.r_[cup, handle, breakout], "#2ca02c")
+
+
+def d_flag(ax):
+    x1 = np.linspace(0, 3, 10); pole = 1 + x1 * 1.2
+    x2 = np.linspace(3, 6, 10); flag = 4.6 - (x2 - 3) * 0.25
+    x3 = np.linspace(6, 8, 8); out = flag[-1] + (x3 - 6) * 1.1
+    _line(ax, np.r_[x1, x2, x3], np.r_[pole, flag, out], "#2ca02c")
+
+
+def d_pennant(ax):
+    x1 = np.linspace(0, 3, 10); pole = 1 + x1 * 1.2
+    x2 = np.arange(3, 8)
+    hi = [4.6, 4.3, 4.0, 3.8, 3.7]; lo = [4.6, 3.2, 3.4, 3.55, 3.65]
+    seq = [hi[i] if i % 2 == 0 else lo[i] for i in range(5)]
+    x3 = np.linspace(8, 9.5, 6); out = 3.7 + (x3 - 8) * 1.1
+    _line(ax, np.r_[x1, x2, x3], np.r_[pole, seq, out], "#2ca02c")
+
+
+def d_sym_triangle(ax):
+    x = np.arange(9)
+    hi = 5 - 0.3 * x; lo = 1 + 0.3 * x
+    y = [hi[i] if i % 2 == 0 else lo[i] for i in range(9)]
+    _line(ax, x, y, "#1f77b4")
+    _line(ax, x, hi, "gray"); _line(ax, x, lo, "gray")
+
+
+def d_asc_triangle(ax):
+    x = np.arange(9)
+    hi = np.full(9, 4.0); lo = 1 + 0.35 * x
+    y = [hi[i] if i % 2 == 0 else lo[i] for i in range(9)]
+    _line(ax, x, y, "#2ca02c")
+    _line(ax, x, hi, "gray"); _line(ax, x, lo, "gray")
+
+
+def d_desc_triangle(ax):
+    x = np.arange(9)
+    lo = np.full(9, 1.5); hi = 5 - 0.35 * x
+    y = [lo[i] if i % 2 == 0 else hi[i] for i in range(9)]
+    _line(ax, x, y, "#d62728")
+    _line(ax, x, hi, "gray"); _line(ax, x, lo, "gray")
+
+
+def d_rectangle(ax):
+    x = np.arange(9)
+    y = [1.5, 4, 1.5, 4, 1.5, 4, 1.5, 4, 5.2]
+    _line(ax, x, y, "#1f77b4")
+    ax.axhline(4, ls="--", color="gray", lw=1); ax.axhline(1.5, ls="--", color="gray", lw=1)
+
+
+def _candle(ax, x, o, c, h, l, w=0.3):
+    color = "#2ca02c" if c >= o else "#d62728"
+    ax.plot([x, x], [l, h], color="black", lw=1)
+    ax.add_patch(plt.Rectangle((x - w, min(o, c)), 2 * w, abs(c - o) or 0.05,
+                               color=color))
+
+
+def d_doji(ax):
+    for i, (o, c, h, l) in enumerate([(2, 2.5, 3, 1.5), (3, 3.1, 3.2, 2.9), (2.8, 2.3, 3.3, 1.8)]):
+        _candle(ax, i, o, c, h, l)
+    ax.set_xlim(-1, 3); ax.set_ylim(1, 4)
+
+
+def d_hammer(ax):
+    _candle(ax, 0, 3.5, 3.0, 3.6, 3.4)
+    _candle(ax, 1, 2.6, 2.9, 3.0, 1.2)  # uzun alt fitil
+    _candle(ax, 2, 2.9, 3.6, 3.7, 2.8)
+    ax.set_xlim(-1, 3); ax.set_ylim(1, 4)
+
+
+def d_engulfing(ax):
+    _candle(ax, 0, 3.4, 2.9, 3.5, 2.8)  # küçük düşüş
+    _candle(ax, 1, 2.8, 3.8, 3.9, 2.7)  # büyük yükseliş yutan
+    ax.set_xlim(-1, 2); ax.set_ylim(2, 4)
+
+
+def d_star(ax):
+    _candle(ax, 0, 4, 2.8, 4.1, 2.7)   # büyük düşüş
+    _candle(ax, 1, 2.5, 2.4, 2.7, 2.3) # küçük yıldız
+    _candle(ax, 2, 2.6, 3.9, 4.0, 2.5) # büyük yükseliş
+    ax.set_xlim(-1, 3); ax.set_ylim(2, 4.2)
+
+
+PATTERNS = {
+    "Dönüş (Reversal) Desenleri": [
+        (d_head_shoulders, "Omuz-Baş-Omuz", "Yükseliş trendinin sonu. Üç tepe: ortadaki (baş) en yüksek. "
+         "Boyun çizgisi (kesikli) aşağı kırılırsa düşüşe dönüş sinyali."),
+        (d_inv_head_shoulders, "Ters Omuz-Baş-Omuz", "Düşüş trendinin sonu; dip sinyali. "
+         "Boyun çizgisi yukarı kırılırsa yükselişe dönüş."),
+        (d_double_top, "Çift Tepe (M)", "Fiyat iki kez aynı seviyeye çıkıp geri döner. "
+         "Ortadaki dip kırılırsa düşüş sinyali. En güvenilir dönüş desenlerinden."),
+        (d_double_bottom, "Çift Dip (W)", "İki kez aynı dibe inip yükselir. "
+         "Ortadaki tepe kırılırsa yükseliş sinyali."),
+        (d_triple_top, "Üçlü Tepe/Dip", "Çift versiyonun daha güçlü hali; üç kez denenen seviye."),
+        (d_rising_wedge, "Yükselen Kama", "Yükselirken daralır. Genelde AŞAĞI kırılır → düşüş sinyali."),
+        (d_falling_wedge, "Alçalan Kama", "Düşerken daralır. Genelde YUKARI kırılır → yükseliş sinyali."),
+        (d_cup_handle, "Fincan-Kulp", "Uzun 'U' taban + küçük kulp. Kulp kırılınca yükseliş sinyali."),
+    ],
+    "Devam (Continuation) Desenleri": [
+        (d_flag, "Bayrak", "Sert hareket (direk) sonrası ters eğimli kısa mola, sonra aynı yöne devam."),
+        (d_pennant, "Flama", "Direk sonrası küçük simetrik üçgen; kırılımla trend devam eder."),
+        (d_sym_triangle, "Simetrik Üçgen", "Alım-satım dengelenir, sıkışır. Kırılım yönü trendi belirler."),
+        (d_asc_triangle, "Yükselen Üçgen", "Düz direnç + yükselen dipler. Genelde YUKARI kırılır."),
+        (d_desc_triangle, "Alçalan Üçgen", "Düz destek + alçalan tepeler. Genelde AŞAĞI kırılır."),
+        (d_rectangle, "Dikdörtgen (Kanal)", "Yatay bantta gidip gelme; banttan kırılım yön verir."),
+    ],
+    "Mum (Candlestick) Formasyonları": [
+        (d_doji, "Doji", "Açılış ≈ kapanış. Kararsızlık; trend sonunda dönüş habercisi olabilir."),
+        (d_hammer, "Çekiç", "Uzun alt fitil, küçük gövde. Dipte dönüş (yükseliş) sinyali."),
+        (d_engulfing, "Yutan Formasyon", "İkinci mum birincinin gövdesini tamamen sarar. Güçlü dönüş sinyali."),
+        (d_star, "Sabah/Akşam Yıldızı", "Üç mumluk dönüş: büyük mum + küçük yıldız + ters yönde büyük mum."),
+    ],
+}
+
+
+def render_pattern_guide():
+    st.title("📚 Grafik Modelleri Rehberi")
+    st.caption("Desenleri manuel incelemek için şematik referans. Çizimler temsilîdir.")
+    st.info("Bu desenler ihtimal verir, kesinlik değil. Hacim ve göstergelerle (RSI, MACD, "
+            "hareketli ortalamalar) birlikte teyit edilmeli.")
+    for group, items in PATTERNS.items():
+        st.header(group)
+        cols = st.columns(2)
+        for i, (fn, name, desc) in enumerate(items):
+            with cols[i % 2]:
+                st.subheader(name)
+                st.pyplot(_fig(fn), use_container_width=False)
+                st.write(desc)
+                st.divider()
+
 
 # ---------------------------------------------------------------------------
 # Analiz kriterleri (Kawsar dizisinden). Yeni madde eklemek için buraya
@@ -269,6 +485,330 @@ def fetch_financials(ticker: str) -> dict:
         data["sma50"] = data["sma200"] = data["rsi14"] = None
 
     return data
+
+
+def compute_rsi(close, period: int = 14):
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    return 100 - (100 / (1 + rs))
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_history(ticker: str, period: str):
+    """Belirli bir dönem için OHLCV fiyat geçmişini çeker."""
+    df = yf.Ticker(ticker).history(period=period)
+    return df if df is not None and not df.empty else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_statements(ticker: str):
+    """Gelir tablosu, bilanço ve nakit akışı tablolarını çeker."""
+    tk = yf.Ticker(ticker)
+    def safe(attr):
+        try:
+            df = getattr(tk, attr)
+            return df if df is not None and not df.empty else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+    return {"income": safe("financials"), "balance": safe("balance_sheet"), "cashflow": safe("cashflow")}
+
+
+def render_price_chart(ticker: str):
+    """Zengin fiyat grafiği: mum + SMA + hacim + RSI + zaman aralığı seçici."""
+    label_to_period = {"1 Ay": "1mo", "6 Ay": "6mo", "1 Yıl": "1y", "5 Yıl": "5y"}
+    choice = st.radio("Zaman aralığı", list(label_to_period), index=2, horizontal=True,
+                      key=f"range_{ticker}")
+    period = label_to_period[choice]
+
+    df = fetch_history(ticker, period)
+    if df.empty or len(df) < 5:
+        st.info("Bu aralık için yeterli fiyat verisi bulunamadı.")
+        return
+
+    # Aralığa uygun hareketli ortalamalar (veri boyunu aşanları atla)
+    mavs = tuple(m for m in (50, 200) if m < len(df))
+
+    # RSI panelini hazırla (30/70 referans çizgileriyle)
+    rsi = compute_rsi(df["Close"])
+    apds = [
+        mpf.make_addplot(rsi, panel=2, color="#6a3d9a", width=1.0, ylabel="RSI"),
+        mpf.make_addplot(pd.Series(70, index=df.index), panel=2, color="gray", width=0.6),
+        mpf.make_addplot(pd.Series(30, index=df.index), panel=2, color="gray", width=0.6),
+    ]
+
+    try:
+        plot_kwargs = dict(
+            type="candle", style="yahoo",
+            volume=True, addplot=apds,
+            panel_ratios=(6, 2, 2), figratio=(16, 9), figscale=1.1,
+            returnfig=True, warn_too_much_data=len(df) + 1,
+        )
+        if mavs:
+            plot_kwargs["mav"] = mavs
+        fig, _ = mpf.plot(df, **plot_kwargs)
+        st.pyplot(fig)
+        plt.close(fig)
+        if mavs:
+            st.caption(f"Mum grafiği + {', '.join(f'SMA{m}' for m in mavs)} + Hacim + RSI(14). "
+                       "RSI'de 70 üstü aşırı alım, 30 altı aşırı satım bölgesidir.")
+    except Exception as e:
+        st.error(f"Grafik çizilemedi: {e}")
+
+
+def _find_row(df, *names):
+    """Tablo satırını esnek eşleşmeyle bulur (yfinance satır adları değişebilir)."""
+    if df.empty:
+        return None
+    for n in names:
+        for idx in df.index:
+            if n.lower() in str(idx).lower():
+                return df.loc[idx]
+    return None
+
+
+def render_financials(ticker: str, currency: str):
+    """Bilanço tabloları + gelir/kâr trend grafikleri."""
+    stmts = fetch_statements(ticker)
+    income, balance, cashflow = stmts["income"], stmts["balance"], stmts["cashflow"]
+
+    if income.empty and balance.empty and cashflow.empty:
+        st.info("Bu şirket için finansal tablo verisi bulunamadı "
+                "(bazı BIST/küçük şirketlerde yfinance verisi eksik olabilir).")
+        return
+
+    # --- Trend grafikleri ---
+    st.markdown("#### 📈 Yıllık Trendler")
+    rev = _find_row(income, "Total Revenue", "Revenue")
+    net = _find_row(income, "Net Income")
+    c1, c2 = st.columns(2)
+    if rev is not None:
+        s = rev[::-1] / 1e6  # milyon; en eskiden yeniye
+        s.index = [str(getattr(d, "year", d)) for d in s.index]
+        with c1:
+            st.caption(f"Gelir (milyon {currency})")
+            st.bar_chart(s)
+    if net is not None:
+        s = net[::-1] / 1e6
+        s.index = [str(getattr(d, "year", d)) for d in s.index]
+        with c2:
+            st.caption(f"Net Kâr (milyon {currency})")
+            st.bar_chart(s)
+    if rev is None and net is None:
+        st.caption("Trend için gelir/kâr satırı bulunamadı.")
+
+    # --- Tablolar ---
+    def show_table(title, df):
+        if df.empty:
+            return
+        disp = (df / 1e6).round(1)
+        disp.columns = [str(getattr(c, "date", c)) for c in disp.columns]
+        st.markdown(f"#### {title} _(milyon {currency})_")
+        st.dataframe(disp, use_container_width=True)
+
+    show_table("💵 Gelir Tablosu", income)
+    show_table("🏦 Bilanço", balance)
+    show_table("💧 Nakit Akışı", cashflow)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_news(ticker: str, api_key: str):
+    """Marketaux'tan hisseyle ilgili haberleri ve duygu skorlarını çeker."""
+    # BIST sembolleri Marketaux'ta bazen '.IS' olmadan tanınır; ikisini de dene
+    symbols_to_try = [ticker]
+    if ticker.endswith(".IS"):
+        symbols_to_try.append(ticker[:-3])
+    for sym in symbols_to_try:
+        try:
+            resp = requests.get(
+                "https://api.marketaux.com/v1/news/all",
+                params={
+                    "symbols": sym,
+                    "filter_entities": "true",
+                    "language": "en,tr",
+                    "limit": 10,
+                    "api_token": api_key,
+                },
+                timeout=8,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if data:
+                return data
+        except Exception as e:
+            return {"error": str(e)}
+    return []
+
+
+def _sentiment_badge(score):
+    if not isinstance(score, (int, float)):
+        return "⚪ nötr"
+    if score > 0.15:
+        return f"🟢 olumlu ({score:+.2f})"
+    if score < -0.15:
+        return f"🔴 olumsuz ({score:+.2f})"
+    return f"⚪ nötr ({score:+.2f})"
+
+
+def render_news(ticker: str, api_key: str):
+    """Haber + duygu skoru sekmesi."""
+    if not api_key:
+        st.info("Haberleri görmek için kenar çubuğundan ücretsiz Marketaux API anahtarı gir "
+                "(marketaux.com — günde 100 istek, kredi kartı gerekmez).")
+        return
+
+    with st.spinner("Haberler getiriliyor..."):
+        news = fetch_news(ticker, api_key)
+
+    if isinstance(news, dict) and news.get("error"):
+        st.error(f"Haberler alınamadı: {news['error']}\n\n"
+                 "İpucu: Günlük 100 istek limitine takılmış olabilirsin ya da anahtar hatalı.")
+        return
+    if not news:
+        st.info("Bu hisse için haber bulunamadı. (BIST ve küçük şirketlerde haber kapsaması sınırlı olabilir.)")
+        return
+
+    # Genel duygu özeti
+    scores = []
+    for art in news:
+        for ent in art.get("entities", []):
+            s = ent.get("sentiment_score")
+            if isinstance(s, (int, float)):
+                scores.append(s)
+    if scores:
+        avg = sum(scores) / len(scores)
+        st.metric("Genel Haber Duygusu", _sentiment_badge(avg))
+        st.divider()
+
+    for art in news:
+        title = art.get("title") or "(başlık yok)"
+        src = art.get("source") or ""
+        published = (art.get("published_at") or "")[:10]
+        url = art.get("url") or "#"
+        desc = art.get("description") or ""
+        # Hisseye ait duygu skoru
+        ent_score = None
+        for ent in art.get("entities", []):
+            s = ent.get("sentiment_score")
+            if isinstance(s, (int, float)):
+                ent_score = s
+                break
+        st.markdown(f"**[{title}]({url})**")
+        meta = f"{src} · {published}" if published else src
+        st.caption(f"{meta} — {_sentiment_badge(ent_score)}")
+        if desc:
+            st.write(desc)
+        st.divider()
+
+    st.caption("Kaynak: Marketaux. Duygu skoru -1 (çok olumsuz) ile +1 (çok olumlu) arasındadır ve "
+               "otomatik üretilir; kesin gerçeği değil, bir sinyali temsil eder.")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_regulation_news(ticker: str, api_key: str):
+    """Hisseyle ilgili regülasyon/yasa odaklı haberleri çeker."""
+    syms = [ticker] + ([ticker[:-3]] if ticker.endswith(".IS") else [])
+    for sym in syms:
+        try:
+            resp = requests.get(
+                "https://api.marketaux.com/v1/news/all",
+                params={
+                    "symbols": sym,
+                    "search": "regulation OR law OR policy OR tax OR sanction OR antitrust OR "
+                              "regülasyon OR yasa OR vergi OR düzenleme",
+                    "filter_entities": "true",
+                    "language": "en,tr",
+                    "limit": 8,
+                    "api_token": api_key,
+                },
+                timeout=8,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if data:
+                return data
+        except Exception:
+            return []
+    return []
+
+
+def render_regulation(ticker, fin, company, client, ai_ready, model, news_key):
+    """Yasa/regülasyon etki analizi sekmesi (yapay zeka gerektirir)."""
+    st.markdown("Bir yasa/düzenlemenin bu şirketi nasıl etkileyebileceğini analiz eder. "
+                "İstersen aşağıya belirli bir yasayı yazabilirsin; ya da boş bırakıp "
+                "otomatik regülasyon haberi taramasına dayalı analiz alabilirsin.")
+
+    if not ai_ready:
+        st.info("Bu sekme yapay zeka analizine dayanır. Kenar çubuğundan analiz modunu "
+                "'Yapay zeka' veya 'Her ikisi' yapıp ücretsiz Gemini anahtarını gir.")
+        return
+
+    user_law = st.text_area(
+        "Belirli bir yasa/düzenleme (opsiyonel)",
+        placeholder="Örn: 'Yeni dijital hizmet vergisi', 'AB karbon sınır düzenlemesi', "
+                    "'bankacılıkta yeni sermaye yeterlilik kuralı'...",
+        key=f"law_{ticker}",
+    )
+    run = st.button("⚖️ Etkiyi Analiz Et", type="primary", key=f"reg_{ticker}")
+    if not run:
+        return
+
+    # Otomatik regülasyon haberlerini topla (varsa)
+    reg_context = ""
+    if news_key:
+        with st.spinner("Regülasyon haberleri taranıyor..."):
+            reg_news = fetch_regulation_news(ticker, news_key)
+        if reg_news:
+            başlıklar = []
+            for art in reg_news[:8]:
+                t = art.get("title") or ""
+                d = (art.get("published_at") or "")[:10]
+                if t:
+                    başlıklar.append(f"- ({d}) {t}")
+            if başlıklar:
+                reg_context = "İlgili güncel regülasyon/yasa haber başlıkları:\n" + "\n".join(başlıklar)
+                with st.expander("Taranan haber başlıkları"):
+                    st.markdown("\n".join(başlıklar))
+
+    task_parts = [
+        f"Şirket: {company} ({ticker})",
+        f"Sektör: {fin.get('sector')} / {fin.get('industry')}",
+        f"Ülke: {fin.get('country')}",
+    ]
+    if user_law.strip():
+        task_parts.append(f"\nİNCELENECEK ÖZEL YASA/DÜZENLEME:\n{user_law.strip()}")
+    if reg_context:
+        task_parts.append("\n" + reg_context)
+    if not user_law.strip() and not reg_context:
+        task_parts.append("\nBelirli bir yasa verilmedi ve haber taraması boş döndü. "
+                          "Bu sektör ve ülke için genel olarak gündemde olabilecek düzenleme "
+                          "risklerini değerlendir.")
+
+    task = (
+        "\n".join(task_parts) + "\n\n"
+        "Yukarıdaki bilgilere göre, bu yasa(lar)ın/düzenleme(ler)in şirkete olası etkisini analiz et:\n"
+        "• Etkilenecek iş kolları/gelir kalemleri\n"
+        "• Etki yönü (olumlu/olumsuz) ve neden\n"
+        "• Tahmini büyüklük (düşük/orta/yüksek) ve zaman ufku\n"
+        "• Belirsizlikler\n\n"
+        "Kesin öngörü mümkün değilse bunu açıkça belirt. Bu bir yatırım tavsiyesi değildir."
+    )
+    system = (
+        "Sen bir düzenleyici/politika risk analistisin. Verilen şirket ve yasa bilgilerine göre "
+        "olası etkileri mantıklı, ölçülü ve Türkçe biçimde değerlendir. Elinde kesin veri yoksa "
+        "tahmin yürüttüğünü belirt, uydurma sayı verme."
+    )
+    try:
+        with st.spinner("Etki analizi üretiliyor..."):
+            resp = client.models.generate_content(
+                model=model,
+                contents=task,
+                config=types.GenerateContentConfig(system_instruction=system, max_output_tokens=1500),
+            )
+        st.markdown(resp.text or "(Yanıt alınamadı.)")
+    except Exception as e:
+        st.error(f"Analiz üretilemedi: {e}\n\nÜcretsiz Gemini limitine takıldıysan biraz bekle.")
 
 
 def build_context(ticker: str, fin: dict) -> str:
@@ -605,6 +1145,12 @@ def run_analysis(client, model, context, company, ticker, criterion) -> str:
 # Kenar çubuğu — API anahtarı ve ayarlar
 # ---------------------------------------------------------------------------
 with st.sidebar:
+    page = st.radio(
+        "📂 Menü",
+        ["Hisse Analizi", "Grafik Modelleri Rehberi"],
+        index=0,
+    )
+    st.divider()
     st.header("⚙️ Ayarlar")
 
     mode = st.radio(
@@ -640,6 +1186,21 @@ with st.sidebar:
         )
 
     st.divider()
+    st.markdown(
+        "**📰 Haberler (opsiyonel):**\n\n"
+        "Ücretsiz Marketaux anahtarı:\n"
+        "👉 [marketaux.com](https://www.marketaux.com/)\n\n"
+        "_(Günde 100 istek, kredi kartı gerekmez)_"
+    )
+    news_key = st.text_input(
+        "Marketaux API Anahtarı",
+        type="password",
+        help="marketaux.com'dan ücretsiz alabilirsin. Boş bırakırsan haber sekmesi pasif olur. "
+        "Alternatif olarak .streamlit/secrets.toml içine MARKETAUX_API_KEY olarak koyabilirsin.",
+        value=st.secrets.get("MARKETAUX_API_KEY", "") if hasattr(st, "secrets") else "",
+    )
+
+    st.divider()
     st.caption("Analiz kriterleri: Kawsar (@Kawsar_Ai) dizisinden.")
     selected_keys = st.multiselect(
         "Hangi analizler yapılsın?",
@@ -649,8 +1210,12 @@ with st.sidebar:
     )
 
 # ---------------------------------------------------------------------------
-# Ana ekran
+# Ana ekran — seçili menüye göre
 # ---------------------------------------------------------------------------
+if page == "Grafik Modelleri Rehberi":
+    render_pattern_guide()
+    st.stop()
+
 st.title("📊 Borsa Analiz Uygulaması")
 st.caption("Bir ticker yaz, 6 kritere göre analiz al. (Örn: AAPL, MSFT, GOOGL, THYAO.IS, ASELS.IS)")
 
@@ -709,41 +1274,59 @@ if go:
         except Exception as e:
             st.warning(f"Gemini bağlantısı kurulamadı, sadece kural bazlı gösterilecek: {e}")
 
-    # 4) Seçili kriterleri sekmelerde çalıştır
     active = [c for c in CRITERIA if c["key"] in selected_keys]
-    if not active:
-        st.info("Kenar çubuğundan en az bir analiz kriteri seç.")
-        st.stop()
 
-    tabs = st.tabs([c["title"] for c in active])
-    for tab, criterion in zip(tabs, active):
-        with tab:
-            # --- Kural bazlı bölüm ---
-            if use_rules:
-                st.markdown("#### 📐 Kural Bazlı")
-                try:
-                    st.markdown(RULE_ENGINE[criterion["key"]](fin))
-                except Exception as e:
-                    st.error(f"Kural bazlı analiz üretilemedi: {e}")
+    # 4) Üst düzey sekmeler
+    top_tabs = st.tabs(
+        ["📈 Fiyat Grafiği", "📑 Bilançolar", "📰 Haberler",
+         "⚖️ Yasa/Regülasyon", f"🔍 Kriter Analizi ({len(active)})"]
+    )
 
-            # --- Yapay zeka bölümü ---
-            if use_ai:
-                if use_rules:
-                    st.divider()
-                st.markdown("#### 🤖 Yapay Zeka (Gemini)")
-                if not ai_ready:
-                    st.info("Gemini kullanılamıyor (anahtar yok veya bağlantı kurulamadı).")
-                else:
-                    try:
-                        with st.spinner("Analiz üretiliyor..."):
-                            out = run_analysis(client, model, context, company, ticker, criterion)
-                        st.markdown(out)
-                    except Exception as e:
-                        st.error(
-                            f"Bu analiz üretilemedi: {e}\n\n"
-                            "İpucu: Ücretsiz katmanda dakikada/günde istek limiti vardır. "
-                            "Limite takıldıysan biraz bekleyip tekrar dene."
-                        )
+    with top_tabs[0]:
+        render_price_chart(ticker)
+
+    with top_tabs[1]:
+        render_financials(ticker, cur)
+
+    with top_tabs[2]:
+        render_news(ticker, news_key)
+
+    with top_tabs[3]:
+        render_regulation(ticker, fin, company, client, ai_ready, model, news_key)
+
+    with top_tabs[4]:
+        if not active:
+            st.info("Kenar çubuğundan en az bir analiz kriteri seç.")
+        else:
+            tabs = st.tabs([c["title"] for c in active])
+            for tab, criterion in zip(tabs, active):
+                with tab:
+                    # --- Kural bazlı bölüm ---
+                    if use_rules:
+                        st.markdown("#### 📐 Kural Bazlı")
+                        try:
+                            st.markdown(RULE_ENGINE[criterion["key"]](fin))
+                        except Exception as e:
+                            st.error(f"Kural bazlı analiz üretilemedi: {e}")
+
+                    # --- Yapay zeka bölümü ---
+                    if use_ai:
+                        if use_rules:
+                            st.divider()
+                        st.markdown("#### 🤖 Yapay Zeka (Gemini)")
+                        if not ai_ready:
+                            st.info("Gemini kullanılamıyor (anahtar yok veya bağlantı kurulamadı).")
+                        else:
+                            try:
+                                with st.spinner("Analiz üretiliyor..."):
+                                    out = run_analysis(client, model, context, company, ticker, criterion)
+                                st.markdown(out)
+                            except Exception as e:
+                                st.error(
+                                    f"Bu analiz üretilemedi: {e}\n\n"
+                                    "İpucu: Ücretsiz katmanda dakikada/günde istek limiti vardır. "
+                                    "Limite takıldıysan biraz bekleyip tekrar dene."
+                                )
 
     st.divider()
     st.caption(
