@@ -113,6 +113,47 @@ CRITERIA = [
             "Dengeli bir sonuçla bitir."
         ),
     },
+    {
+        "key": "health",
+        "title": "🩺 Finansal Sağlık & Bilanço",
+        "prompt": (
+            "{company} şirketinin finansal sağlığını ve bilanço gücünü değerlendir.\n"
+            "Şunları içer:\n"
+            "• Likidite ve nakit pozisyonu (cari oran vb.)\n"
+            "• Borçluluk düzeyi (Borç/Özkaynak, faiz karşılama)\n"
+            "• Serbest nakit akışı üretimi\n"
+            "• İflas/mali sıkıntı riski\n\n"
+            "Şirketin borcunu çevirebilme ve ayakta kalma gücünü 1-10 arasında puanla. "
+            "Puanı **Finansal Sağlık Puanı: X/10** formatında ver."
+        ),
+    },
+    {
+        "key": "dividend",
+        "title": "💵 Temettü Analizi",
+        "prompt": (
+            "{company} şirketinin temettü profilini analiz et.\n"
+            "Şunları içer:\n"
+            "• Temettü verimi\n"
+            "• Dağıtım oranının (payout ratio) sürdürülebilirliği\n"
+            "• Temettü geçmişi ve büyüme istikrarı\n"
+            "• Temettü odaklı bir yatırımcı için uygun mu\n\n"
+            "Şirket temettü ödemiyorsa bunu belirt ve nedenini yorumla."
+        ),
+    },
+    {
+        "key": "technical",
+        "title": "📈 Teknik Analiz & Momentum",
+        "prompt": (
+            "{ticker} hissesi için teknik analiz ve momentum değerlendirmesi yap.\n"
+            "Sana verilen teknik verileri (hareketli ortalamalar, RSI, 52 hafta konumu) kullan.\n"
+            "Şunları içer:\n"
+            "• Fiyatın 50 ve 200 günlük ortalamalara göre konumu (trend yönü)\n"
+            "• RSI ile aşırı alım/aşırı satım durumu\n"
+            "• 52 hafta aralığındaki konum ve momentum\n\n"
+            "Kısa-orta vadeli teknik görünümü özetle. Bunun zamanlama amaçlı olduğunu, "
+            "temel analizin yerine geçmediğini belirt."
+        ),
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -172,7 +213,7 @@ def fetch_financials(ticker: str) -> dict:
                 return v
         return None
 
-    return {
+    data = {
         "name": g("longName", "shortName") or ticker,
         "sector": g("sector"),
         "industry": g("industry"),
@@ -197,7 +238,37 @@ def fetch_financials(ticker: str) -> dict:
         "summary": g("longBusinessSummary"),
         "week52_high": g("fiftyTwoWeekHigh"),
         "week52_low": g("fiftyTwoWeekLow"),
+        # Finansal sağlık / bilanço
+        "current_ratio": g("currentRatio"),
+        "quick_ratio": g("quickRatio"),
+        "total_cash": g("totalCash"),
+        "total_debt": g("totalDebt"),
+        "ebitda": g("ebitda"),
+        # Temettü
+        "payout_ratio": g("payoutRatio"),
+        "div_rate": g("dividendRate"),
+        "five_yr_div_yield": g("fiveYearAvgDividendYield"),
     }
+
+    # Teknik göstergeler (fiyat geçmişinden)
+    try:
+        hist = tk.history(period="1y")["Close"].dropna()
+        if len(hist) >= 20:
+            data["sma50"] = float(hist.rolling(50).mean().iloc[-1]) if len(hist) >= 50 else None
+            data["sma200"] = float(hist.rolling(200).mean().iloc[-1]) if len(hist) >= 200 else None
+            # RSI (14 gün)
+            delta = hist.diff()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean()
+            rs = gain / loss.replace(0, float("nan"))
+            rsi = 100 - (100 / (1 + rs))
+            data["rsi14"] = float(rsi.iloc[-1]) if not rsi.empty else None
+        else:
+            data["sma50"] = data["sma200"] = data["rsi14"] = None
+    except Exception:
+        data["sma50"] = data["sma200"] = data["rsi14"] = None
+
+    return data
 
 
 def build_context(ticker: str, fin: dict) -> str:
@@ -226,7 +297,13 @@ def build_context(ticker: str, fin: dict) -> str:
         f"Serbest nakit akışı: {fmt(fin.get('free_cashflow'), money=True)}\n"
         f"Beta: {fin.get('beta')} | Temettü verimi: {fmt(fin.get('dividend_yield'), pct=True)}\n"
         f"52h yüksek/düşük: {fin.get('week52_high')} / {fin.get('week52_low')}\n"
-        f"Analist ort. hedef fiyat: {fin.get('target_mean')} | Öneri: {fin.get('recommendation')}\n\n"
+        f"Analist ort. hedef fiyat: {fin.get('target_mean')} | Öneri: {fin.get('recommendation')}\n"
+        f"Cari oran: {fin.get('current_ratio')} | Likit oran: {fin.get('quick_ratio')}\n"
+        f"Toplam nakit: {fmt(fin.get('total_cash'), money=True)} | "
+        f"Toplam borç: {fmt(fin.get('total_debt'), money=True)} | EBITDA: {fmt(fin.get('ebitda'), money=True)}\n"
+        f"Dağıtım oranı (payout): {fmt(fin.get('payout_ratio'), pct=True)} | "
+        f"Temettü/hisse: {fin.get('div_rate')} | 5y ort. temettü verimi: {fin.get('five_yr_div_yield')}\n"
+        f"Teknik: SMA50={fin.get('sma50')} | SMA200={fin.get('sma200')} | RSI(14)={fin.get('rsi14')}\n\n"
         f"Şirket özeti: {fin.get('summary')}\n"
     )
 
@@ -392,6 +469,103 @@ def rule_bull_bear(fin) -> str:
     return "\n".join(lines)
 
 
+def rule_health(fin) -> str:
+    cr = fin.get("current_ratio"); de = fin.get("debt_to_equity")
+    cash = fin.get("total_cash"); debt = fin.get("total_debt"); fcf = fin.get("free_cashflow")
+    score = 5
+    lines = ["**Kural bazlı finansal sağlık:**", ""]
+    if isinstance(cr, (int, float)):
+        if cr >= 2:
+            score += 2; lines.append(f"• Cari oran {cr:.2f} → çok güçlü likidite.")
+        elif cr >= 1:
+            score += 1; lines.append(f"• Cari oran {cr:.2f} → kısa vadeli borçları karşılayabilir.")
+        else:
+            score -= 2; lines.append(f"• Cari oran {cr:.2f} (<1) → likidite baskısı riski.")
+    if isinstance(de, (int, float)):
+        if de < 50:
+            score += 2; lines.append(f"• Borç/Özkaynak {de:.0f} → düşük borçluluk, sağlam bilanço.")
+        elif de < 120:
+            lines.append(f"• Borç/Özkaynak {de:.0f} → makul borçluluk.")
+        else:
+            score -= 2; lines.append(f"• Borç/Özkaynak {de:.0f} → yüksek kaldıraç, riskli.")
+    if isinstance(cash, (int, float)) and isinstance(debt, (int, float)):
+        net = cash - debt
+        durum = "net nakit pozisyonu (borçtan fazla nakit)" if net > 0 else "net borç pozisyonu"
+        lines.append(f"• Nakit {cash:,.0f} vs borç {debt:,.0f} → {durum}.")
+        if net > 0:
+            score += 1
+    if isinstance(fcf, (int, float)):
+        if fcf > 0:
+            score += 1; lines.append(f"• Serbest nakit akışı pozitif ({fcf:,.0f}) → nakit üretiyor.")
+        else:
+            score -= 1; lines.append(f"• Serbest nakit akışı negatif ({fcf:,.0f}) → nakit yakıyor.")
+    score = max(1, min(10, score))
+    lines += ["", f"**Finansal Sağlık Puanı (kural bazlı): {score}/10**"]
+    return "\n".join(lines)
+
+
+def rule_dividend(fin) -> str:
+    dy = fin.get("dividend_yield"); pr = fin.get("payout_ratio")
+    rate = fin.get("div_rate"); avg5 = fin.get("five_yr_div_yield")
+    lines = ["**Kural bazlı temettü değerlendirmesi:**", ""]
+    if not dy and not rate:
+        lines.append("• Bu şirket temettü ödemiyor görünüyor (veya veri yok). "
+                     "Büyüme odaklı şirketlerde bu normaldir; kârı yeniden yatırıma yönlendiriyor olabilir.")
+        return "\n".join(lines)
+    if isinstance(dy, (int, float)):
+        lines.append(f"• Temettü verimi: {_pct(dy)}")
+        if dy > 0.06:
+            lines.append("  → Yüksek verim; cazip ama sürdürülebilirliğini kontrol et.")
+        elif dy > 0.02:
+            lines.append("  → Makul, dengeli bir verim.")
+        else:
+            lines.append("  → Düşük verim; büyüme ağırlıklı bir profil.")
+    if rate:
+        lines.append(f"• Hisse başı temettü: {rate}")
+    if isinstance(avg5, (int, float)):
+        lines.append(f"• 5 yıllık ortalama temettü verimi: %{avg5}")
+    if isinstance(pr, (int, float)):
+        lines.append(f"• Dağıtım oranı (payout): {_pct(pr)}")
+        if pr > 1:
+            lines.append("  → Kârından fazlasını dağıtıyor; sürdürülemez olabilir (uyarı).")
+        elif pr > 0.7:
+            lines.append("  → Yüksek dağıtım; büyümeye az pay kalıyor.")
+        else:
+            lines.append("  → Sağlıklı, sürdürülebilir dağıtım seviyesi.")
+    return "\n".join(lines)
+
+
+def rule_technical(fin) -> str:
+    price = fin.get("price"); s50 = fin.get("sma50"); s200 = fin.get("sma200")
+    rsi = fin.get("rsi14"); hi = fin.get("week52_high"); lo = fin.get("week52_low")
+    lines = ["**Kural bazlı teknik görünüm:**", ""]
+    if isinstance(price, (int, float)) and isinstance(s50, (int, float)):
+        lines.append(f"• Fiyat {price:.2f} vs SMA50 {s50:.2f} → "
+                     + ("50 gün üstünde (kısa vade olumlu)." if price > s50 else "50 gün altında (kısa vade zayıf)."))
+    if isinstance(price, (int, float)) and isinstance(s200, (int, float)):
+        lines.append(f"• Fiyat {price:.2f} vs SMA200 {s200:.2f} → "
+                     + ("200 gün üstünde (uzun vade yükseliş trendi)." if price > s200 else "200 gün altında (uzun vade düşüş trendi)."))
+    if isinstance(s50, (int, float)) and isinstance(s200, (int, float)):
+        lines.append("• " + ("SMA50 > SMA200 → 'golden cross' bölgesi (olumlu)."
+                             if s50 > s200 else "SMA50 < SMA200 → 'death cross' bölgesi (olumsuz)."))
+    if isinstance(rsi, (int, float)):
+        if rsi > 70:
+            tag = "aşırı ALIM (geri çekilme riski)"
+        elif rsi < 30:
+            tag = "aşırı SATIM (tepki yükselişi olabilir)"
+        else:
+            tag = "nötr bölge"
+        lines.append(f"• RSI(14): {rsi:.0f} → {tag}.")
+    if isinstance(price, (int, float)) and isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+        pos = (price - lo) / (hi - lo)
+        lines.append(f"• 52 hafta aralığındaki konum: {_pct(pos)} "
+                     f"(düşük {lo:.2f} – yüksek {hi:.2f}).")
+    if len(lines) == 2:
+        lines.append("• Yeterli fiyat geçmişi verisi yok.")
+    lines += ["", "_Not: Teknik göstergeler zamanlama içindir, temel analizin yerine geçmez._"]
+    return "\n".join(lines)
+
+
 RULE_ENGINE = {
     "moat": rule_moat,
     "valuation": rule_valuation,
@@ -399,6 +573,9 @@ RULE_ENGINE = {
     "growth": rule_growth,
     "institutional": rule_institutional,
     "bull_bear": rule_bull_bear,
+    "health": rule_health,
+    "dividend": rule_dividend,
+    "technical": rule_technical,
 }
 
 
