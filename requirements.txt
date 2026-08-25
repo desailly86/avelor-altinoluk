@@ -1,5 +1,5 @@
 streamlit>=1.36
-yfinance>=0.2.40
+yfinance>=0.2.54
 google-genai>=1.0
 streamlit-searchbox>=0.1.24
 requests>=2.31
@@ -7,3 +7,4 @@ matplotlib>=3.7
 numpy>=1.24
 pandas>=2.0
 mplfinance>=0.12.10b0
+curl_cffi>=0.7
