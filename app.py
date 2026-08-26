@@ -505,23 +505,40 @@ def fetch_financials(ticker: str) -> dict:
         "five_yr_div_yield": g("fiveYearAvgDividendYield"),
     }
 
-    # Teknik göstergeler (fiyat geçmişinden)
+    # Teknik göstergeler (fiyat geçmişinden — 10 indikatör)
+    for k in ("sma50", "sma200", "rsi14", "macd", "macd_signal", "bb_up", "bb_low",
+              "bb_pctb", "bb_width", "vwap", "stoch_k", "stoch_d", "atr", "atr_avg",
+              "adx", "plus_di", "minus_di", "obv_slope", "vol_last", "vol_avg"):
+        data[k] = None
     try:
-        hist = _retry(lambda: tk.history(period="1y"))["Close"].dropna()
-        if len(hist) >= 20:
-            data["sma50"] = float(hist.rolling(50).mean().iloc[-1]) if len(hist) >= 50 else None
-            data["sma200"] = float(hist.rolling(200).mean().iloc[-1]) if len(hist) >= 200 else None
-            # RSI (14 gün)
-            delta = hist.diff()
-            gain = delta.clip(lower=0).rolling(14).mean()
-            loss = (-delta.clip(upper=0)).rolling(14).mean()
-            rs = gain / loss.replace(0, float("nan"))
-            rsi = 100 - (100 / (1 + rs))
-            data["rsi14"] = float(rsi.iloc[-1]) if not rsi.empty else None
-        else:
-            data["sma50"] = data["sma200"] = data["rsi14"] = None
+        ohlc = _retry(lambda: tk.history(period="1y"))
+        if ohlc is not None and len(ohlc) >= 20:
+            ind = compute_indicators(ohlc)
+            data["sma50"] = _last(ind.get("sma50"))
+            data["sma200"] = _last(ind.get("sma200"))
+            data["rsi14"] = _last(ind.get("rsi"))
+            data["macd"] = _last(ind.get("macd"))
+            data["macd_signal"] = _last(ind.get("macd_signal"))
+            data["bb_up"] = _last(ind.get("bb_up"))
+            data["bb_low"] = _last(ind.get("bb_low"))
+            data["bb_pctb"] = _last(ind.get("bb_pctb"))
+            data["bb_width"] = _last(ind.get("bb_width"))
+            data["vwap"] = _last(ind.get("vwap"))
+            data["stoch_k"] = _last(ind.get("stoch_k"))
+            data["stoch_d"] = _last(ind.get("stoch_d"))
+            data["atr"] = _last(ind.get("atr"))
+            data["atr_avg"] = _last(ind.get("atr_avg"))
+            data["adx"] = _last(ind.get("adx"))
+            data["plus_di"] = _last(ind.get("plus_di"))
+            data["minus_di"] = _last(ind.get("minus_di"))
+            obv = ind.get("obv")
+            if obv is not None and len(obv.dropna()) > 5:
+                recent = obv.dropna().iloc[-10:]
+                data["obv_slope"] = float(recent.iloc[-1] - recent.iloc[0])
+            data["vol_last"] = _last(ind.get("volume"))
+            data["vol_avg"] = _last(ind.get("vol_avg"))
     except Exception:
-        data["sma50"] = data["sma200"] = data["rsi14"] = None
+        pass
 
     return data
 
@@ -532,6 +549,88 @@ def compute_rsi(close, period: int = 14):
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss.replace(0, float("nan"))
     return 100 - (100 / (1 + rs))
+
+
+def _last(series):
+    """Bir serinin son geçerli (NaN olmayan) değerini float olarak döndürür."""
+    try:
+        s = series.dropna()
+        return float(s.iloc[-1]) if len(s) else None
+    except Exception:
+        return None
+
+
+def compute_indicators(df):
+    """OHLCV veriden 10 temel indikatörü hesaplar. Seri sözlüğü döndürür."""
+    out = {}
+    if df is None or df.empty or "Close" not in df:
+        return out
+    close, high, low = df["Close"], df["High"], df["Low"]
+    vol = df["Volume"] if "Volume" in df else pd.Series(0, index=df.index)
+
+    # Hareketli ortalamalar (3)
+    out["sma20"] = close.rolling(20).mean()
+    out["sma50"] = close.rolling(50).mean()
+    out["sma200"] = close.rolling(200).mean()
+
+    # RSI (1)
+    out["rsi"] = compute_rsi(close)
+
+    # MACD (2)
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    out["macd"] = ema12 - ema26
+    out["macd_signal"] = out["macd"].ewm(span=9, adjust=False).mean()
+    out["macd_hist"] = out["macd"] - out["macd_signal"]
+
+    # Bollinger Bantları (4)
+    mid = close.rolling(20).mean()
+    std = close.rolling(20).std()
+    out["bb_mid"], out["bb_up"], out["bb_low"] = mid, mid + 2 * std, mid - 2 * std
+    rng = (out["bb_up"] - out["bb_low"]).replace(0, np.nan)
+    out["bb_pctb"] = (close - out["bb_low"]) / rng
+    out["bb_width"] = rng / mid
+
+    # Hacim (5)
+    out["volume"] = vol
+    out["vol_avg"] = vol.rolling(20).mean()
+
+    # VWAP (6) — gösterilen pencereye göre çapalı (yaklaşık)
+    tp = (high + low + close) / 3
+    cum_vol = vol.cumsum().replace(0, np.nan)
+    out["vwap"] = (tp * vol).cumsum() / cum_vol
+
+    # Stochastic (7)
+    ll = low.rolling(14).min()
+    hh = high.rolling(14).max()
+    out["stoch_k"] = 100 * (close - ll) / (hh - ll).replace(0, np.nan)
+    out["stoch_d"] = out["stoch_k"].rolling(3).mean()
+
+    # ATR (8)
+    prev_close = close.shift()
+    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    out["atr"] = tr.rolling(14).mean()
+    out["atr_avg"] = out["atr"].rolling(20).mean()
+
+    # ADX + yön (9)
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = ((up > down) & (up > 0)) * up
+    minus_dm = ((down > up) & (down > 0)) * down
+    atr14 = tr.rolling(14).mean().replace(0, np.nan)
+    plus_di = 100 * (plus_dm.rolling(14).mean() / atr14)
+    minus_di = 100 * (minus_dm.rolling(14).mean() / atr14)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    out["adx"] = dx.rolling(14).mean()
+    out["plus_di"], out["minus_di"] = plus_di, minus_di
+
+    # OBV (10)
+    obv = (np.sign(close.diff()).fillna(0) * vol).cumsum()
+    out["obv"] = obv
+    out["obv_ema"] = obv.ewm(span=20, adjust=False).mean()
+
+    out["close"] = close
+    return out
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -556,10 +655,19 @@ def fetch_statements(ticker: str):
 
 
 def render_price_chart(ticker: str):
-    """Zengin fiyat grafiği: mum + SMA + hacim + RSI + zaman aralığı seçici."""
+    """Zengin fiyat grafiği: mum + indikatörler + zaman aralığı seçici + indikatör özeti."""
     label_to_period = {"1 Ay": "1mo", "6 Ay": "6mo", "1 Yıl": "1y", "5 Yıl": "5y"}
-    choice = st.radio("Zaman aralığı", list(label_to_period), index=2, horizontal=True,
-                      key=f"range_{ticker}")
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        choice = st.radio("Zaman aralığı", list(label_to_period), index=2, horizontal=True,
+                          key=f"range_{ticker}")
+    with c2:
+        overlays = st.multiselect(
+            "Grafik katmanları",
+            ["Hareketli Ortalamalar", "Bollinger", "VWAP", "MACD paneli", "Stochastic paneli"],
+            default=["Hareketli Ortalamalar", "Bollinger", "MACD paneli"],
+            key=f"ov_{ticker}",
+        )
     period = label_to_period[choice]
 
     df = fetch_history(ticker, period)
@@ -567,34 +675,125 @@ def render_price_chart(ticker: str):
         st.info("Bu aralık için yeterli fiyat verisi bulunamadı.")
         return
 
-    # Aralığa uygun hareketli ortalamalar (veri boyunu aşanları atla)
+    ind = compute_indicators(df)
     mavs = tuple(m for m in (50, 200) if m < len(df))
 
-    # RSI panelini hazırla (30/70 referans çizgileriyle)
-    rsi = compute_rsi(df["Close"])
-    apds = [
-        mpf.make_addplot(rsi, panel=2, color="#6a3d9a", width=1.0, ylabel="RSI"),
-        mpf.make_addplot(pd.Series(70, index=df.index), panel=2, color="gray", width=0.6),
-        mpf.make_addplot(pd.Series(30, index=df.index), panel=2, color="gray", width=0.6),
+    # Ana panel üstü katmanlar
+    apds = []
+    if "Bollinger" in overlays and "bb_up" in ind:
+        apds += [
+            mpf.make_addplot(ind["bb_up"], color="#9467bd", width=0.8),
+            mpf.make_addplot(ind["bb_low"], color="#9467bd", width=0.8),
+        ]
+    if "VWAP" in overlays and "vwap" in ind:
+        apds.append(mpf.make_addplot(ind["vwap"], color="#ff7f0e", width=1.0))
+
+    # Panel numaralandırma: 0=fiyat, 1=hacim, sonra RSI, MACD, Stoch sırayla
+    next_panel = 2
+    ratios = [6, 2]
+
+    rsi_panel = next_panel
+    apds += [
+        mpf.make_addplot(ind["rsi"], panel=rsi_panel, color="#6a3d9a", width=1.0, ylabel="RSI"),
+        mpf.make_addplot(pd.Series(70, index=df.index), panel=rsi_panel, color="gray", width=0.6),
+        mpf.make_addplot(pd.Series(30, index=df.index), panel=rsi_panel, color="gray", width=0.6),
     ]
+    ratios.append(2)
+    next_panel += 1
+
+    if "MACD paneli" in overlays and "macd" in ind:
+        p = next_panel
+        apds += [
+            mpf.make_addplot(ind["macd"], panel=p, color="#1f77b4", width=1.0, ylabel="MACD"),
+            mpf.make_addplot(ind["macd_signal"], panel=p, color="#d62728", width=1.0),
+            mpf.make_addplot(ind["macd_hist"], panel=p, type="bar", color="gray", alpha=0.4),
+        ]
+        ratios.append(2)
+        next_panel += 1
+
+    if "Stochastic paneli" in overlays and "stoch_k" in ind:
+        p = next_panel
+        apds += [
+            mpf.make_addplot(ind["stoch_k"], panel=p, color="#2ca02c", width=1.0, ylabel="Stoch"),
+            mpf.make_addplot(ind["stoch_d"], panel=p, color="#d62728", width=0.9),
+            mpf.make_addplot(pd.Series(80, index=df.index), panel=p, color="gray", width=0.5),
+            mpf.make_addplot(pd.Series(20, index=df.index), panel=p, color="gray", width=0.5),
+        ]
+        ratios.append(2)
+        next_panel += 1
 
     try:
         plot_kwargs = dict(
             type="candle", style="yahoo",
             volume=True, addplot=apds,
-            panel_ratios=(6, 2, 2), figratio=(16, 9), figscale=1.1,
+            panel_ratios=tuple(ratios), figratio=(16, 9), figscale=1.2,
             returnfig=True, warn_too_much_data=len(df) + 1,
         )
-        if mavs:
+        if mavs and "Hareketli Ortalamalar" in overlays:
             plot_kwargs["mav"] = mavs
         fig, _ = mpf.plot(df, **plot_kwargs)
         st.pyplot(fig)
         plt.close(fig)
-        if mavs:
-            st.caption(f"Mum grafiği + {', '.join(f'SMA{m}' for m in mavs)} + Hacim + RSI(14). "
-                       "RSI'de 70 üstü aşırı alım, 30 altı aşırı satım bölgesidir.")
     except Exception as e:
         st.error(f"Grafik çizilemedi: {e}")
+
+    # İndikatör özeti (10 indikatör) — bu aralıktaki son değerlere göre
+    render_indicator_summary(df, ind)
+
+
+def render_indicator_summary(df, ind):
+    """Grafiğin altında 10 indikatörün son değerlerini ve sinyallerini özetler."""
+    with st.expander("📊 İndikatör Özeti (10 indikatör) — manuel inceleme", expanded=True):
+        price = _last(ind.get("close"))
+        rows = []
+
+        def add(name, val, sig):
+            rows.append({"İndikatör": name, "Değer": val, "Sinyal": sig})
+
+        rsi = _last(ind.get("rsi"))
+        if rsi is not None:
+            add("RSI(14)", f"{rsi:.0f}", "🔴 aşırı alım" if rsi > 70 else "🟢 aşırı satım" if rsi < 30 else "⚪ nötr")
+        macd, sig = _last(ind.get("macd")), _last(ind.get("macd_signal"))
+        if macd is not None and sig is not None:
+            add("MACD", f"{macd:.3f}", "🟢 pozitif" if macd > sig else "🔴 negatif")
+        s50, s200 = _last(ind.get("sma50")), _last(ind.get("sma200"))
+        if price is not None and s50 is not None:
+            add("SMA50", f"{s50:.2f}", "🟢 fiyat üstünde" if price > s50 else "🔴 fiyat altında")
+        if price is not None and s200 is not None:
+            add("SMA200", f"{s200:.2f}", "🟢 fiyat üstünde" if price > s200 else "🔴 fiyat altında")
+        pctb = _last(ind.get("bb_pctb"))
+        if pctb is not None:
+            add("Bollinger %B", f"{pctb:.2f}", "🔴 üst bant" if pctb > 0.8 else "🟢 alt bant" if pctb < 0.2 else "⚪ orta")
+        vl, va = _last(ind.get("volume")), _last(ind.get("vol_avg"))
+        if vl is not None and va:
+            add("Hacim", f"{vl/va:.1f}× ort.", "🟢 yüksek" if vl > va * 1.2 else "🔴 düşük" if vl < va * 0.8 else "⚪ normal")
+        vwap = _last(ind.get("vwap"))
+        if price is not None and vwap is not None:
+            add("VWAP", f"{vwap:.2f}", "🟢 fiyat üstünde" if price > vwap else "🔴 fiyat altında")
+        k = _last(ind.get("stoch_k"))
+        if k is not None:
+            add("Stochastic %K", f"{k:.0f}", "🔴 aşırı alım" if k > 80 else "🟢 aşırı satım" if k < 20 else "⚪ nötr")
+        atr, atr_avg = _last(ind.get("atr")), _last(ind.get("atr_avg"))
+        if atr is not None and atr_avg:
+            add("ATR(14)", f"{atr:.2f}", "📈 volatilite artıyor" if atr > atr_avg else "📉 volatilite azalıyor")
+        adx, pdi, mdi = _last(ind.get("adx")), _last(ind.get("plus_di")), _last(ind.get("minus_di"))
+        if adx is not None:
+            d = ""
+            if pdi is not None and mdi is not None:
+                d = " · +DI" if pdi > mdi else " · -DI"
+            add("ADX(14)", f"{adx:.0f}{d}", "💪 güçlü trend" if adx > 25 else "😴 zayıf trend" if adx < 20 else "⚪ gelişen")
+        obv = ind.get("obv")
+        if obv is not None and len(obv.dropna()) > 10:
+            recent = obv.dropna().iloc[-10:]
+            slope = recent.iloc[-1] - recent.iloc[0]
+            add("OBV", "10g eğim", "🟢 yükseliyor" if slope > 0 else "🔴 düşüyor" if slope < 0 else "⚪ yatay")
+
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.caption("En sağlıklı yaklaşım — TREND (MA) → MOMENTUM (RSI/MACD) → VOLATİLİTE (ATR/Bollinger) "
+                   "→ HACİM (Volume/VWAP/OBV) → FİYAT YAPISI. Birden fazla indikatörün aynı yönde "
+                   "sinyal vermesine confluence (uyum) denir ve daha güvenilirdir. İndikatör tek başına "
+                   "al-sat sistemi değildir.")
 
 
 def _find_row(df, *names):
@@ -883,7 +1082,11 @@ def build_context(ticker: str, fin: dict) -> str:
         f"Toplam borç: {fmt(fin.get('total_debt'), money=True)} | EBITDA: {fmt(fin.get('ebitda'), money=True)}\n"
         f"Dağıtım oranı (payout): {fmt(fin.get('payout_ratio'), pct=True)} | "
         f"Temettü/hisse: {fin.get('div_rate')} | 5y ort. temettü verimi: {fin.get('five_yr_div_yield')}\n"
-        f"Teknik: SMA50={fin.get('sma50')} | SMA200={fin.get('sma200')} | RSI(14)={fin.get('rsi14')}\n\n"
+        f"Teknik: SMA50={fin.get('sma50')} | SMA200={fin.get('sma200')} | RSI(14)={fin.get('rsi14')}\n"
+        f"Teknik-2: MACD={fin.get('macd')}/sinyal={fin.get('macd_signal')} | "
+        f"Bollinger %B={fin.get('bb_pctb')} | VWAP={fin.get('vwap')} | "
+        f"Stochastic %K={fin.get('stoch_k')} | ATR={fin.get('atr')} | "
+        f"ADX={fin.get('adx')} (+DI={fin.get('plus_di')}/-DI={fin.get('minus_di')})\n\n"
         f"Şirket özeti: {fin.get('summary')}\n"
     )
 
@@ -1118,31 +1321,102 @@ def rule_dividend(fin) -> str:
 def rule_technical(fin) -> str:
     price = fin.get("price"); s50 = fin.get("sma50"); s200 = fin.get("sma200")
     rsi = fin.get("rsi14"); hi = fin.get("week52_high"); lo = fin.get("week52_low")
-    lines = ["**Kural bazlı teknik görünüm:**", ""]
-    if isinstance(price, (int, float)) and isinstance(s50, (int, float)):
-        lines.append(f"• Fiyat {price:.2f} vs SMA50 {s50:.2f} → "
-                     + ("50 gün üstünde (kısa vade olumlu)." if price > s50 else "50 gün altında (kısa vade zayıf)."))
-    if isinstance(price, (int, float)) and isinstance(s200, (int, float)):
-        lines.append(f"• Fiyat {price:.2f} vs SMA200 {s200:.2f} → "
-                     + ("200 gün üstünde (uzun vade yükseliş trendi)." if price > s200 else "200 gün altında (uzun vade düşüş trendi)."))
-    if isinstance(s50, (int, float)) and isinstance(s200, (int, float)):
-        lines.append("• " + ("SMA50 > SMA200 → 'golden cross' bölgesi (olumlu)."
-                             if s50 > s200 else "SMA50 < SMA200 → 'death cross' bölgesi (olumsuz)."))
-    if isinstance(rsi, (int, float)):
-        if rsi > 70:
-            tag = "aşırı ALIM (geri çekilme riski)"
-        elif rsi < 30:
-            tag = "aşırı SATIM (tepki yükselişi olabilir)"
+    F = lambda x: isinstance(x, (int, float))
+    lines = ["**Kural bazlı teknik görünüm (10 indikatör):**", ""]
+
+    # 3) Hareketli ortalamalar
+    if F(price) and F(s50):
+        lines.append(f"• **MA (SMA50):** Fiyat {price:.2f} vs {s50:.2f} → "
+                     + ("üstünde (kısa vade olumlu)." if price > s50 else "altında (kısa vade zayıf)."))
+    if F(price) and F(s200):
+        lines.append(f"• **MA (SMA200):** " + ("200 gün üstünde (uzun vade yükseliş)."
+                     if price > s200 else "200 gün altında (uzun vade düşüş)."))
+    if F(s50) and F(s200):
+        lines.append("• **MA kesişimi:** " + ("SMA50>SMA200 → golden cross bölgesi (olumlu)."
+                     if s50 > s200 else "SMA50<SMA200 → death cross bölgesi (olumsuz)."))
+
+    # 1) RSI
+    if F(rsi):
+        tag = "aşırı ALIM (geri çekilme riski)" if rsi > 70 else ("aşırı SATIM (tepki olabilir)" if rsi < 30 else "nötr")
+        lines.append(f"• **RSI(14):** {rsi:.0f} → {tag}.")
+
+    # 2) MACD
+    macd, sig = fin.get("macd"), fin.get("macd_signal")
+    if F(macd) and F(sig):
+        lines.append(f"• **MACD:** {macd:.3f} vs sinyal {sig:.3f} → "
+                     + ("pozitif momentum (MACD>Sinyal)." if macd > sig else "negatif momentum (MACD<Sinyal)."))
+
+    # 4) Bollinger
+    pctb, width = fin.get("bb_pctb"), fin.get("bb_width")
+    if F(pctb):
+        if pctb > 1:
+            b = "üst bandın üstünde (aşırı gerilim / güçlü momentum)"
+        elif pctb < 0:
+            b = "alt bandın altında (aşırı satış / zayıflık)"
+        elif pctb > 0.8:
+            b = "üst banda yakın"
+        elif pctb < 0.2:
+            b = "alt banda yakın"
         else:
-            tag = "nötr bölge"
-        lines.append(f"• RSI(14): {rsi:.0f} → {tag}.")
-    if isinstance(price, (int, float)) and isinstance(hi, (int, float)) and isinstance(lo, (int, float)) and hi > lo:
+            b = "bant ortasında"
+        lines.append(f"• **Bollinger:** %B={pctb:.2f} → {b}.")
+
+    # 5) Hacim
+    vl, va = fin.get("vol_last"), fin.get("vol_avg")
+    if F(vl) and F(va) and va:
+        r = vl / va
+        lines.append(f"• **Hacim:** son işlem hacmi 20 gün ortalamasının {r:.1f}× katı → "
+                     + ("ortalamanın üzerinde (hareket teyitli)." if r > 1.2 else
+                        "ortalamanın altında (zayıf katılım)." if r < 0.8 else "ortalama civarında."))
+
+    # 6) VWAP
+    vwap = fin.get("vwap")
+    if F(price) and F(vwap):
+        lines.append(f"• **VWAP:** Fiyat {price:.2f} vs VWAP {vwap:.2f} → "
+                     + ("üstünde (olumlu görünüm)." if price > vwap else "altında (zayıf görünüm)."))
+
+    # 7) Stochastic
+    k, d = fin.get("stoch_k"), fin.get("stoch_d")
+    if F(k):
+        tag = "aşırı ALIM (>80)" if k > 80 else ("aşırı SATIM (<20)" if k < 20 else "nötr")
+        extra = ""
+        if F(d):
+            extra = " — %K>%D (yukarı)" if k > d else " — %K<%D (aşağı)"
+        lines.append(f"• **Stochastic:** %K={k:.0f} → {tag}{extra}.")
+
+    # 8) ATR
+    atr, atr_avg = fin.get("atr"), fin.get("atr_avg")
+    if F(atr) and F(atr_avg) and atr_avg:
+        pctp = (atr / price * 100) if F(price) and price else None
+        trend = "volatilite artıyor (hareket alanı genişliyor)" if atr > atr_avg else "volatilite azalıyor (sakinleşiyor)"
+        extra = f", fiyatın ~%{pctp:.1f}'i" if pctp else ""
+        lines.append(f"• **ATR(14):** {atr:.2f}{extra} → {trend}. (Yön göstermez, stop mesafesi için kullanılır.)")
+
+    # 9) ADX
+    adx, pdi, mdi = fin.get("adx"), fin.get("plus_di"), fin.get("minus_di")
+    if F(adx):
+        strength = "güçlü trend" if adx > 25 else ("zayıf/yatay trend" if adx < 20 else "gelişmekte olan trend")
+        direction = ""
+        if F(pdi) and F(mdi):
+            direction = " — +DI>-DI (yukarı yön)" if pdi > mdi else " — -DI>+DI (aşağı yön)"
+        lines.append(f"• **ADX(14):** {adx:.0f} → {strength}{direction}.")
+
+    # 10) OBV
+    obv_slope = fin.get("obv_slope")
+    if F(obv_slope):
+        lines.append("• **OBV:** son 10 günde " + ("yükseliyor (hacim alım yönünde birikiyor)."
+                     if obv_slope > 0 else "düşüyor (hacim satış yönünde)." if obv_slope < 0 else "yatay."))
+
+    # 52 hafta konumu
+    if F(price) and F(hi) and F(lo) and hi > lo:
         pos = (price - lo) / (hi - lo)
-        lines.append(f"• 52 hafta aralığındaki konum: {_pct(pos)} "
-                     f"(düşük {lo:.2f} – yüksek {hi:.2f}).")
+        lines.append(f"• **52 hafta konumu:** {_pct(pos)} (düşük {lo:.2f} – yüksek {hi:.2f}).")
+
     if len(lines) == 2:
         lines.append("• Yeterli fiyat geçmişi verisi yok.")
-    lines += ["", "_Not: Teknik göstergeler zamanlama içindir, temel analizin yerine geçmez._"]
+    lines += ["", "_Not: İndikatörler tek başına al-sat sistemi değildir. Birden fazla indikatörün "
+              "aynı yönde sinyal vermesi (confluence) daha güvenilirdir. Teknik göstergeler "
+              "zamanlama içindir, temel analizin yerine geçmez._"]
     return "\n".join(lines)
 
 
